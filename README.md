@@ -1,143 +1,108 @@
-# 🫀 Multi-Step ECG Time-Series Forecasting
+# Multi-Step ECG Time-Series Forecasting
 
-**Impact of Outlier Imputation on Stacked LSTM Performance**
+**Does fixing 3 bad data points beat adding a whole extra LSTM layer?**
 
-A deep learning project exploring multi-step forecasting of ECG-derived clinical data using recurrent neural networks (LSTM, GRU). The study demonstrates that **data quality** (outlier treatment) can produce larger accuracy gains than increasing model complexity.
+This project forecasts 17-step ECG-derived clinical sequences with LSTM and GRU networks, then asks a narrower question than "which architecture wins": how much of the accuracy gap between models is actually just outlier noise in the training data. Imputing three flagged outlier values in one target column turns out to move the error more than doubling model depth does.
 
 ---
 
-## 📊 Key Results
+## Key Results
 
 | Scenario | Model | MSE | RMSE | MAE |
 |---|---|---|---|---|
-| Before Imputation | LSTM-1 layer | 16.27 | 3.68 | 1.96 |
-| Before Imputation | LSTM-2 layers | 9.04 | 2.96 | 2.03 |
-| Before Imputation | GRU-1 layer | 16.28 | 3.66 | 1.92 |
-| Before Imputation | GRU-2 layers | 8.88 | 2.91 | 1.86 |
-| **After Imputation** | LSTM-1 layer | 10.42 | 3.22 | 2.37 |
-| **After Imputation** | LSTM-2 layers | 9.06 | 3.00 | 2.22 |
-| **After Imputation** | GRU-1 layer | 9.06 | 3.00 | 2.19 |
-| **After Imputation** | **GRU-2 layers** | **7.11** | **2.65** | **1.85** |
+| Before imputation | LSTM (1 layer) | 16.27 | 3.68 | 1.96 |
+| Before imputation | LSTM (2 layers) | 9.04 | 2.96 | 2.03 |
+| Before imputation | GRU (1 layer) | 16.28 | 3.66 | 1.92 |
+| Before imputation | GRU (2 layers) | 8.88 | 2.91 | 1.86 |
+| After imputation | LSTM (1 layer) | 10.42 | 3.22 | 2.37 |
+| After imputation | LSTM (2 layers) | 9.06 | 3.00 | 2.22 |
+| After imputation | GRU (1 layer) | 9.06 | 3.00 | 2.19 |
+| **After imputation** | **GRU (2 layers)** | **7.11** | **2.65** | **1.85** |
 
-> **19.9% MSE reduction** on the best model (GRU-2 layers) by imputing 3 outlier values in Output13 (124 → mean ≈ 14.79)
-
----
-
-## 🏗️ Architecture
-
-```
-Input: (batch, 17 time-steps, 8 features)
-                    │
-            ┌───────┴───────┐
-            │   LSTM Layer 1  │  (hidden_dim=64)
-            │   (or GRU)      │
-            └───────┬───────┘
-                    │
-            ┌───────┴───────┐
-            │   LSTM Layer 2  │  (hidden_dim=64, dropout=0.2)
-            │   (optional)    │
-            └───────┬───────┘
-                    │
-            ┌───────┴───────┐
-            │   Dense (1)     │  (per time-step)
-            └───────┬───────┘
-                    │
-Output: (batch, 17 time-steps, 1)
-```
+Imputing 3 outlier values in `Output13` (raw value 124 against a normal range of roughly 10–23, replaced with the column mean of ≈14.79) cuts MSE by **19.9%** on the best model and by **36.0%** on the single-layer LSTM — a bigger swing than going from 1 to 2 recurrent layers produces on its own.
 
 ---
 
-## 📁 Project Structure
+## Dataset
+
+- 65 patients, one row each in `data/ecg_raw.csv`
+- 8 input features (`O1`–`O8`) recorded at each of 17 sequential time-steps
+- 17 target outputs (`Output1`–`Output17`), one per time-step
+- `Output13` carries 3 extreme outliers (value 124) that dominate its variance until treated
+
+`src/data.py` handles the full pipeline: CSV ingestion, coercion of the `NT` sentinel to `NaN`, IQR-based outlier detection (`detect_outliers_iqr`, k=3.0 to isolate genuine extremes rather than normal spread), mean imputation (`impute_outliers`), and MinMax scaling before the arrays are handed to a PyTorch `Dataset`.
+
+---
+
+## Models
+
+`src/models.py` defines `LSTMForecaster` and `GRUForecaster`, both configurable via a shared `model_factory`:
+
+| Architecture | Layers | Hidden dim | Dropout |
+|---|---|---|---|
+| LSTM / GRU, 1 layer | 1 | 64 | 0.0 |
+| LSTM / GRU, 2 layers | 2 | 64 | 0.2 (inter-layer only) |
+
+Each model maps an `(batch, 17, 8)` input sequence to a `(batch, 17, 1)` per-step prediction through a stacked recurrent encoder and a final dense layer.
+
+**Training** (`src/training.py`): Adam (`lr=1e-3`), early stopping (`patience=10`, restores best weights), 5-fold cross-validation via `cross_validate`. **Evaluation** (`src/metrics.py`): MSE/RMSE/MAE per fold plus paired t-tests (`scipy.stats.ttest_rel`) to check whether differences between model variants are statistically meaningful, not just noise.
+
+---
+
+## Project structure
 
 ```
 ecg-forecasting/
-├── README.md                           # This file
-├── requirements.txt                    # Dependencies
 ├── data/
-│   └── ecg_raw.csv                     # Cleaned dataset (65 patients)
+│   ├── ecg_raw.csv              # 65 patients × 17 steps × 8 features
+│   └── training_results.pkl     # Cached cross-validation results
 ├── notebooks/
-│   ├── 01_EDA_and_Preprocessing.ipynb  # Exploratory data analysis
-│   ├── 02_Model_Training.ipynb         # Model training & cross-validation
-│   ├── 03_Results_and_Analysis.ipynb   # Results deep-dive & statistical tests
-│   └── 04_Outlier_Impact_Study.ipynb   # Before vs after imputation study
+│   ├── 01_EDA_and_Preprocessing.ipynb
+│   ├── 02_Model_Training.ipynb
+│   ├── 03_Results_and_Analysis.ipynb
+│   └── 04_Outlier_Impact_Study.ipynb
 ├── src/
-│   ├── __init__.py
-│   ├── data.py                         # Dataset class & preprocessing
-│   ├── models.py                       # LSTM & GRU model definitions
-│   ├── training.py                     # Training loop & cross-validation
-│   └── metrics.py                      # Evaluation metrics & statistics
-└── figures/                            # Generated publication-quality plots
+│   ├── data.py       # Loading, IQR outlier detection, imputation, scaling, Dataset
+│   ├── models.py     # LSTMForecaster / GRUForecaster / model_factory
+│   ├── training.py   # train_model, EarlyStopper, cross_validate, evaluate_model
+│   └── metrics.py    # MSE/RMSE/MAE, paired_ttest
+├── figures/          # Generated plots (correlation heatmap, loss curves, etc.)
+└── requirements.txt
 ```
 
 ---
 
-## 🔬 Dataset
-
-- **65 patients** with ECG-derived clinical measurements
-- **8 input features** (O1–O8) per time-step
-- **17 sequential time-steps** per patient
-- **17 target outputs** (Output1–Output17)
-- **Key anomaly**: Output13 contains 3 instances of value **124** (vs normal range 10–23)
-
----
-
-## 🧠 Models Compared
-
-| Architecture | Layers | Hidden Dim | Parameters | Dropout |
-|---|---|---|---|---|
-| LSTM-1 layer | 1 | 64 | ~17K | 0.0 |
-| LSTM-2 layers | 2 | 64 | ~52K | 0.2 |
-| GRU-1 layer | 1 | 64 | ~13K | 0.0 |
-| GRU-2 layers | 2 | 64 | ~40K | 0.2 |
-
-**Training**: 5-fold cross-validation, Adam optimiser (lr=0.001), early stopping (patience=10)
-
----
-
-## 🚀 Quick Start
+## Running it
 
 ```bash
-# 1. Clone the repository
 git clone https://github.com/Prabhas-1505/ecg-forecasting.git
 cd ecg-forecasting
-
-# 2. Install dependencies
 pip install -r requirements.txt
-
-# 3. Run the notebooks
 jupyter lab notebooks/
 ```
 
-### Running Order
-1. `01_EDA_and_Preprocessing.ipynb` — Explore data, detect outliers
-2. `02_Model_Training.ipynb` — Train all models with cross-validation
-3. `03_Results_and_Analysis.ipynb` — Analyse results (requires step 2)
-4. `04_Outlier_Impact_Study.ipynb` — Before/after imputation comparison
+Run the notebooks in order — each one depends on artifacts from the previous:
+
+1. **`01_EDA_and_Preprocessing`** — explore the raw data, visualize the Output13 outliers
+2. **`02_Model_Training`** — train all four model variants with 5-fold CV
+3. **`03_Results_and_Analysis`** — compare metrics across variants, run the paired t-tests
+4. **`04_Outlier_Impact_Study`** — retrain before/after imputation and compare directly
 
 ---
 
-## 🛠️ Tech Stack
+## Tech stack
 
-- **Framework**: PyTorch 2.x
-- **Data**: pandas, NumPy, scikit-learn
-- **Visualisation**: matplotlib, seaborn
-- **Validation**: 5-fold cross-validation with paired t-tests
+PyTorch · pandas / NumPy / scikit-learn · matplotlib / seaborn · SciPy (`ttest_rel`)
 
 ---
 
-## 📈 Key Findings
+## Takeaways
 
-1. **Stacked GRU-2 layers** outperforms all other variants across all metrics, achieving the best overall performance (MSE = **7.11**).
-2. **Mean imputation** of the 3 outlier values reduces Output13 variance by **97%** (583.55 → 17.02).
-3. **Data quality > model complexity**: A simple preprocessing step (imputing 3 values) produced a **19.9% MSE reduction** for the stacked GRU-2 model and **36.0%** for the single-layer LSTM-1 model.
-4. **GRU** models outperform their LSTM counterparts while utilizing approximately 20-25% fewer parameters.
-
----
-
-## 📄 License
-
-This project is for educational and research purposes.
+1. **GRU beats LSTM here**, and does it with ~20-25% fewer parameters at the same depth.
+2. **Depth helps, but less than expected**: going 1→2 layers narrows the gap between LSTM and GRU, but doesn't close it.
+3. **Outlier treatment is the biggest lever tested**: imputing 3 values in one column outperforms adding an entire extra recurrent layer, and the effect is larger on the weaker single-layer models.
+4. **Best configuration overall**: 2-layer GRU on the imputed data (MSE 7.11) — the combination of the better architecture and the cleaner target.
 
 ---
 
-*Built with PyTorch • Prabhas Avvaru*
+*Educational / research project.*
